@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { BusinessProfile, Transaction } from '../types';
-import { Shield, Sparkles, Receipt, ArrowUpRight, ArrowDownRight, RefreshCw, CheckCircle, MapPin, Sparkle } from 'lucide-react';
+import { uploadReceiptOcr, getCreditScore, getFinancialSummary } from '../api';
+import { Shield, Sparkles, Receipt, ArrowUpRight, ArrowDownRight, RefreshCw, CheckCircle, MapPin, Sparkle, UploadCloud, Loader2 } from 'lucide-react';
 
 interface DashboardProps {
   profile: BusinessProfile;
@@ -31,11 +32,77 @@ export default function Dashboard({
   const [amount, setAmount] = useState('');
   const [category, setCategory] = useState('');
   const [vendor, setFormVendor] = useState('');
+  const [isCustomCategory, setIsCustomCategory] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [realScore, setRealScore] = useState<number | null>(null);
+  const [riskLevel, setRiskLevel] = useState<string>('MEDIUM');
+  const [summaryData, setSummaryData] = useState<any>(null);
+  const [scoreError, setScoreError] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    const businessId = Number(localStorage.getItem('vula_business_id') || 1);
+    getCreditScore(businessId)
+      .then((data) => {
+        setRealScore(data.score);
+        setRiskLevel(data.riskLevel);
+        setScoreError(null);
+      })
+      .catch((err) => {
+        console.error('Failed to fetch dashboard score:', err);
+        setScoreError(err.message || 'Alternative Credit Scoring requires transaction history.');
+      });
+
+    getFinancialSummary(businessId)
+      .then((data) => {
+        setSummaryData(data);
+      })
+      .catch((err) => console.error('Failed to fetch dashboard summary:', err));
+  }, [transactions]);
+
+  const handleRealFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const file = e.target.files[0];
+      const businessId = Number(localStorage.getItem('vula_business_id') || 1);
+      
+      setIsScanning(true);
+      showToast(`Uploading receipt ${file.name} to Gemini AI OCR...`, 'info');
+
+      try {
+        const data = await uploadReceiptOcr(businessId, file, scanType || undefined);
+        
+        const newTx: Transaction = {
+          id: data.id.toString(),
+          vendor: data.vendor,
+          date: data.transactionDate,
+          amount: data.amount,
+          type: data.type.toLowerCase() as 'income' | 'expense',
+          category: data.category,
+          status: 'posted'
+        };
+
+        setTransactions((prev) => [newTx, ...prev]);
+        showToast(`Gemini successfully verified and posted transaction of ${data.amount.toLocaleString()} ETB!`, 'success');
+        setShowScanForm(false);
+      } catch (err: any) {
+        showToast(err.message || 'AI receipt extraction failed. Please try again.', 'error');
+      } finally {
+        setIsScanning(false);
+      }
+    }
+  };
 
   // Calculate circular stroke values
-  const { score, level, color, label } = calculateCreditScore();
-  const maxScore = 850;
-  const minScore = 300;
+  const { score: localScore, level: localLevel, color: localColor, label: localLabel } = calculateCreditScore();
+  const score = realScore !== null ? realScore : localScore;
+  const level = realScore !== null ? (riskLevel === 'LOW' ? 'Low' : riskLevel === 'MEDIUM' ? 'Medium' : 'High') : localLevel;
+  const label = realScore !== null ? `${level} Credit Risk (Audited)` : localLabel;
+
+  const hasEnoughTransactions = transactions.length >= 5;
+  const transactionCount = transactions.length;
+
+  const maxScore = 900;
+  const minScore = 100;
   // credit score percentage mapping
   const percentage = ((score - minScore) / (maxScore - minScore)) * 100;
   const radius = 60;
@@ -123,6 +190,41 @@ export default function Dashboard({
         </div>
       </div>
 
+      {/* KPI Overview Summary Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-slate-900/50 border border-slate-800/80 p-4 rounded-2xl space-y-1">
+          <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-bold">Total Revenue (Audited)</span>
+          <p className="text-xl font-extrabold text-white">
+            ${summaryData ? summaryData.totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
+          </p>
+          <span className="text-[9px] text-emerald-400 font-medium block">CBE/Telebirr Inflows verified</span>
+        </div>
+
+        <div className="bg-slate-900/50 border border-slate-800/80 p-4 rounded-2xl space-y-1">
+          <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-bold">Total Expenses (Booked)</span>
+          <p className="text-xl font-extrabold text-slate-200">
+            ${summaryData ? summaryData.totalExpenses.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
+          </p>
+          <span className="text-[9px] text-rose-400 font-medium block">Audited invoice outlays</span>
+        </div>
+
+        <div className="bg-slate-900/50 border border-slate-800/80 p-4 rounded-2xl space-y-1">
+          <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-bold">Net Profit</span>
+          <p className={`text-xl font-extrabold ${summaryData && summaryData.netProfit < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+            ${summaryData ? summaryData.netProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
+          </p>
+          <span className="text-[9px] text-slate-400 font-medium block">Cumulative ledger profit</span>
+        </div>
+
+        <div className="bg-slate-900/50 border border-slate-800/80 p-4 rounded-2xl space-y-1">
+          <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-bold">Cash Flow Standing</span>
+          <p className={`text-xl font-extrabold uppercase ${summaryData && summaryData.cashFlowStatus === 'NEGATIVE' ? 'text-rose-400' : 'text-emerald-400'}`}>
+            {summaryData ? summaryData.cashFlowStatus : 'POSITIVE'}
+          </p>
+          <span className="text-[9px] text-indigo-400 font-medium block">24-hour liquidity assessment</span>
+        </div>
+      </div>
+
       {/* Grid: Dual-Scan & Circular Credit Gauge */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
@@ -156,7 +258,7 @@ export default function Dashboard({
                   <ArrowUpRight className="w-8 h-8 text-emerald-400 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform mb-2" />
                 )}
                 <span className="text-sm font-semibold text-emerald-300">Scan Issued Invoice</span>
-                <span className="text-[10px] text-slate-500 mt-1">Simulate Income Receipt</span>
+                <span className="text-[10px] text-slate-500 mt-1">Upload Income Receipt</span>
               </button>
 
               <button
@@ -173,69 +275,149 @@ export default function Dashboard({
                   <ArrowDownRight className="w-8 h-8 text-rose-400 group-hover:-translate-x-0.5 group-hover:translate-y-0.5 transition-transform mb-2" />
                 )}
                 <span className="text-sm font-semibold text-rose-300">Scan Paid Receipt</span>
-                <span className="text-[10px] text-slate-500 mt-1">Simulate Expense Receipt</span>
+                <span className="text-[10px] text-slate-500 mt-1">Upload Expense Receipt</span>
               </button>
             </div>
           </div>
 
           {/* Expanded Scanning Modal Form within dashboard */}
           {showScanForm && (
-            <form onSubmit={handleScanSubmit} className="bg-slate-950 border border-slate-800 p-4 rounded-xl mt-4 space-y-3 animate-slide-up">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  OCR Simulation: {scanType === 'income' ? 'Accounts Receivable' : 'Accounts Payable'}
-                </span>
-                <button type="button" onClick={() => setShowScanForm(false)} className="text-slate-500 hover:text-slate-300 text-xs">
-                  Cancel
+            <div className="space-y-4 mt-4 animate-slide-up">
+              
+              {/* CARD 1: EXCLUSIVELY FOR AI OCR SCREENSHOT EXTRACTIONS */}
+              <div className="bg-slate-950 border border-slate-800 p-5 rounded-2xl space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                  <span className="text-xs font-black uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                    <Sparkles className="w-4 h-4" />
+                    AI OCR Image Scanner (CBE & Telebirr)
+                  </span>
+                  <button type="button" onClick={() => setShowScanForm(false)} className="text-slate-500 hover:text-slate-300 text-xs">
+                    Cancel
+                  </button>
+                </div>
+
+                <input 
+                  type="file" 
+                  ref={fileInputRef} 
+                  onChange={handleRealFileUpload} 
+                  accept="image/*,.pdf" 
+                  className="hidden" 
+                />
+
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isScanning}
+                  className="w-full h-28 border-2 border-dashed border-slate-800 hover:border-emerald-500 bg-slate-900/40 hover:bg-slate-900/80 rounded-xl flex flex-col items-center justify-center gap-1.5 transition-all duration-150 group"
+                >
+                  {isScanning ? (
+                    <div className="flex items-center gap-2 text-xs font-bold text-emerald-400 animate-pulse">
+                      <Loader2 className="w-4.5 h-4.5 animate-spin" />
+                      Analyzing Receipt via Gemini AI OCR...
+                    </div>
+                  ) : (
+                    <>
+                      <UploadCloud className="w-7 h-7 text-slate-400 group-hover:text-emerald-400 transition-colors" />
+                      <span className="text-xs font-bold text-slate-200">Upload CBE/Telebirr Receipt Screenshot</span>
+                      <span className="text-[10px] text-slate-500">Extracts sender, receiver, amounts, and transaction reference keys</span>
+                    </>
+                  )}
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[10px] text-slate-400 mb-1">Receipt Amount</label>
-                  <input
-                    type="number"
-                    placeholder="e.g. 1500"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    required
-                    className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-sm px-3 py-2 rounded focus:outline-none focus:border-emerald-500"
-                  />
+              {/* CARD 2: EXCLUSIVELY FOR MANUAL BOOKKEEPING ENTRIES */}
+              <div className="bg-slate-950 border border-slate-800 p-5 rounded-2xl space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                    Manual Ledger Record: {scanType === 'income' ? 'Income / CBE Credits' : 'Expense / CBE Debits'}
+                  </span>
                 </div>
-                <div>
-                  <label className="block text-[10px] text-slate-400 mb-1">Vendor / Client</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Starbucks, Amazon, Stripe"
-                    value={vendor}
-                    onChange={(e) => setFormVendor(e.target.value)}
-                    required
-                    className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-sm px-3 py-2 rounded focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
+
+                <form onSubmit={handleScanSubmit} className="space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] text-slate-400 mb-1">Receipt Amount</label>
+                      <input
+                        type="number"
+                        placeholder="e.g. 1500"
+                        value={amount}
+                        onChange={(e) => setAmount(e.target.value)}
+                        required
+                        className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-sm px-3 py-2 rounded focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-slate-400 mb-1">Vendor / Client</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Starbucks, Amazon, Stripe"
+                        value={vendor}
+                        onChange={(e) => setFormVendor(e.target.value)}
+                        required
+                        className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-sm px-3 py-2 rounded focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] text-slate-400 mb-1">Category / Reference</label>
+                    {!isCustomCategory ? (
+                      <select
+                        value={category}
+                        onChange={(e) => {
+                          if (e.target.value === 'CUSTOM') {
+                            setIsCustomCategory(true);
+                            setCategory('');
+                          } else {
+                            setCategory(e.target.value);
+                          }
+                        }}
+                        className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-sm px-3 py-2 rounded focus:outline-none focus:border-emerald-500"
+                      >
+                        <option value="">-- Choose Category --</option>
+                        <option value="Consulting">Consulting</option>
+                        <option value="Sales">Sales</option>
+                        <option value="Inventory">Inventory</option>
+                        <option value="Utilities">Utilities</option>
+                        <option value="Rent">Rent</option>
+                        <option value="Marketing">Marketing</option>
+                        <option value="Hosting & SaaS">Hosting & SaaS</option>
+                        <option value="CUSTOM">+ Add Custom Category...</option>
+                      </select>
+                    ) : (
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          placeholder="Type custom category..."
+                          value={category}
+                          onChange={(e) => setCategory(e.target.value)}
+                          required
+                          className="flex-1 bg-slate-900 border border-slate-800 text-slate-200 text-sm px-3 py-2 rounded focus:outline-none focus:border-emerald-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsCustomCategory(false);
+                            setCategory('');
+                          }}
+                          className="px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded border border-slate-700"
+                        >
+                          List
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isScanning}
+                    className="w-full bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 font-medium py-2 rounded text-xs transition-colors flex items-center justify-center gap-1 min-h-[40px]"
+                  >
+                    <span>Execute Manual Bookkeeping Log</span>
+                  </button>
+                </form>
               </div>
 
-              <div>
-                <label className="block text-[10px] text-slate-400 mb-1">Category / Reference</label>
-                <input
-                  type="text"
-                  placeholder="e.g. Sales Revenue, Marketing, Rent"
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                  required
-                  className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-sm px-3 py-2 rounded focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={isScanning}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-2 rounded text-xs transition-colors flex items-center justify-center gap-1 min-h-[40px]"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Execute Receipt Parsing Scanner</span>
-              </button>
-            </form>
+            </div>
           )}
 
           {/* Quick Ledger Stats footer */}
@@ -250,80 +432,180 @@ export default function Dashboard({
             </div>
             <div>
               <p className="text-[10px] text-slate-500">Stability Rating</p>
-              <p className="font-semibold text-emerald-400 mt-1">{level} Risk</p>
+              <p className="font-semibold text-amber-500 mt-1">
+                {scoreError || transactions.length < 5 ? "Pending" : `${level} Risk`}
+              </p>
             </div>
           </div>
 
         </div>
 
-        {/* RIGHT: Circular Credit Score & Risk Badge (5 Columns) */}
+        {/* RIGHT: AI Credit Profile */}
         <div className="lg:col-span-5 bg-slate-900/40 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between space-y-6">
+
+          {/* Header */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Shield className="w-5 h-5 text-indigo-400" />
-              <h2 className="text-sm sm:text-base font-bold text-slate-100">AI Credit Profile</h2>
+              <h2 className="text-sm sm:text-base font-bold text-slate-100">
+                AI Credit Profile
+              </h2>
             </div>
-            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${getRiskBg(level)}`}>
-              Risk: {level}
-            </span>
+
+            {hasEnoughTransactions && (
+              <span
+                className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${getRiskBg(level)}`}
+              >
+                Risk: {level}
+              </span>
+            )}
           </div>
 
-          {/* Custom SVG Circular Gauge */}
-          <div className="flex flex-col items-center justify-center py-2 relative">
-            <div className="relative w-40 h-40">
-              <svg className="w-full h-full transform -rotate-90">
-                {/* Background Circle */}
-                <circle
-                  cx="80"
-                  cy="80"
-                  r={radius}
-                  fill="transparent"
-                  stroke="#1e293b"
-                  strokeWidth="8"
-                />
-                {/* Animated Score Arc */}
-                <circle
-                  cx="80"
-                  cy="80"
-                  r={radius}
-                  fill="transparent"
-                  className={`${getScoreColor(score)} transition-all duration-1000 ease-out`}
-                  strokeWidth="10"
-                  strokeDasharray={circumference}
-                  strokeDashoffset={strokeDashoffset}
-                  strokeLinecap="round"
-                />
-              </svg>
-              {/* Central Text */}
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                <span className="text-[10px] text-slate-500 font-bold tracking-wider uppercase">Trust Score</span>
-                <span className="text-4xl font-extrabold tracking-tight text-slate-100 mt-0.5">{score}</span>
-                <span className="text-[10px] text-slate-400 font-medium mt-1">/ 850 Max</span>
+          {/* NO CREDIT SCORE YET */}
+          {!hasEnoughTransactions ? (
+            <>
+              <div className="flex flex-col items-center justify-center py-2 relative">
+                <div className="relative w-40 h-40">
+                  <svg className="w-full h-full transform -rotate-90">
+                    <circle
+                      cx="80"
+                      cy="80"
+                      r={radius}
+                      fill="transparent"
+                      stroke="#1e293b"
+                      strokeWidth="8"
+                    />
+                  </svg>
+
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                    <span className="text-[10px] text-slate-500 font-bold tracking-wider uppercase">
+                      Credit Score
+                    </span>
+
+                    <span className="text-4xl font-extrabold tracking-tight text-slate-500">
+                      --
+                    </span>
+
+                    <span className="text-[10px] text-amber-400 mt-1">
+                      Waiting for history
+                    </span>
+                  </div>
+                </div>
+
+                <div className="text-center mt-3 text-xs text-slate-400">
+                  Credit Classification:
+                  <span className="text-amber-400 font-bold ml-1">
+                    Not Available
+                  </span>
+                </div>
               </div>
-            </div>
 
-            {/* Credit Level Label */}
-            <div className="text-center mt-3 text-xs text-slate-400">
-              Credit Classification: <span className="text-slate-200 font-bold">{label}</span>
-            </div>
-          </div>
+              <div className="bg-slate-950 border border-slate-800/80 p-4 rounded-xl space-y-3">
+                <div className="flex items-center gap-2 border-b border-slate-800/60 pb-2">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <span className="text-[10px] font-bold text-amber-400 tracking-wide uppercase">
+                    Credit Score Requirements
+                  </span>
+                </div>
 
-          {/* AI Recommendations */}
-          <div className="bg-slate-950 border border-slate-800/80 p-4 rounded-xl space-y-3">
-            <div className="flex items-center gap-2 border-b border-slate-800/60 pb-2">
-              <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-              <span className="text-[10px] font-bold text-amber-400 tracking-wide uppercase">AI Improvement Strategy</span>
-            </div>
-            <ul className="space-y-2 text-xs text-slate-300">
-              {getImprovementTips(score).map((tip, idx) => (
-                <li key={idx} className="flex gap-2 items-start">
-                  <span className="text-amber-500 select-none font-bold text-sm shrink-0 leading-none">•</span>
-                  <span>{tip}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
+                <ul className="space-y-2 text-xs text-slate-300">
+                  <li className="flex gap-2">
+                    <span className="text-amber-500 font-bold">•</span>
+                    Minimum 5 verified transactions required.
+                  </li>
 
+                  <li className="flex gap-2">
+                    <span className="text-amber-500 font-bold">•</span>
+                    Upload Telebirr, CBE, Dashen, Awash or other payment proofs.
+                  </li>
+
+                  <li className="flex gap-2">
+                    <span className="text-amber-500 font-bold">•</span>
+                    Add income and expense records consistently.
+                  </li>
+
+                  <li className="flex gap-2">
+                    <span className="text-amber-500 font-bold">•</span>
+                    Current Transactions:
+                    <span className="font-bold text-slate-100">
+                      {transactionCount}/5
+                    </span>
+                  </li>
+                </ul>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* CREDIT SCORE AVAILABLE */}
+              <div className="flex flex-col items-center justify-center py-2 relative">
+                <div className="relative w-40 h-40">
+                  <svg className="w-full h-full transform -rotate-90">
+                    <circle
+                      cx="80"
+                      cy="80"
+                      r={radius}
+                      fill="transparent"
+                      stroke="#1e293b"
+                      strokeWidth="8"
+                    />
+
+                    <circle
+                      cx="80"
+                      cy="80"
+                      r={radius}
+                      fill="transparent"
+                      className={`${getScoreColor(score)} transition-all duration-1000 ease-out`}
+                      strokeWidth="10"
+                      strokeDasharray={circumference}
+                      strokeDashoffset={strokeDashoffset}
+                      strokeLinecap="round"
+                    />
+                  </svg>
+
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                    <span className="text-[10px] text-slate-500 font-bold tracking-wider uppercase">
+                      Trust Score
+                    </span>
+
+                    <span className="text-4xl font-extrabold tracking-tight text-slate-100 mt-0.5">
+                      {score}
+                    </span>
+
+                    <span className="text-[10px] text-slate-400 font-medium mt-1">
+                      / 900 Max
+                    </span>
+                  </div>
+                </div>
+
+                <div className="text-center mt-3 text-xs text-slate-400">
+                  Credit Classification:
+                  <span className="text-slate-200 font-bold ml-1">
+                    {label}
+                  </span>
+                </div>
+              </div>
+
+              <div className="bg-slate-950 border border-slate-800/80 p-4 rounded-xl space-y-3">
+                <div className="flex items-center gap-2 border-b border-slate-800/60 pb-2">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <span className="text-[10px] font-bold text-amber-400 tracking-wide uppercase">
+                    AI Improvement Strategy
+                  </span>
+                </div>
+
+                <ul className="space-y-2 text-xs text-slate-300">
+                  {getImprovementTips(score).map((tip, idx) => (
+                    <li key={idx} className="flex gap-2 items-start">
+                      <span className="text-amber-500 select-none font-bold text-sm shrink-0 leading-none">
+                        •
+                      </span>
+                      <span>{tip}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </>
+          )}
         </div>
 
       </div>

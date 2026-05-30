@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { Transaction, ExtractedData } from '../types';
+import { uploadReceiptOcr, createTransactionManual } from '../api';
 import { 
   FileText, UploadCloud, Search, Trash2, Edit2, Plus, X, 
   Check, Loader2, Filter, AlertCircle, TrendingUp, TrendingDown, RefreshCw 
@@ -26,6 +27,7 @@ export default function Bookkeeping({ transactions, setTransactions, showToast }
   const [showManualModal, setShowManualModal] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [isCustomCategory, setIsCustomCategory] = useState(false);
 
   // Form Fields
   const [formVendor, setFormVendor] = useState('');
@@ -33,57 +35,43 @@ export default function Bookkeeping({ transactions, setTransactions, showToast }
   const [formCategory, setFormCategory] = useState('Marketing');
   const [formType, setFormType] = useState<'income' | 'expense'>('expense');
   const [formDate, setFormDate] = useState(() => new Date().toISOString().substring(0, 10));
+  const [formReference, setFormReference] = useState('');
+  const [formProofSource, setFormProofSource] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Quick select pre-coded invoices/receipts for easy demo simulation!
-  const demoFiles = [
-    { name: 'invoice_aws_hosting.pdf', vendor: 'Amazon Web Services', amount: 345.20, category: 'Hosting & SaaS', type: 'expense' as const },
-    { name: 'receipt_starbucks.png', vendor: 'Starbucks Coffee Corp', amount: 18.50, category: 'Meals & Entertainment', type: 'expense' as const },
-    { name: 'stripe_payout_june.pdf', vendor: 'Stripe Merchant Payout', amount: 8450.00, category: 'Sales Revenue', type: 'income' as const },
-  ];
-
-  // Trigger simulated file processing
-  const handleSimulateOCR = (file: typeof demoFiles[0]) => {
-    setIsUploading(true);
-    setUploadProgress(10);
-    showToast(`Uploading ${file.name}...`, 'info');
-
-    // Simulate progress increments
-    const interval = setInterval(() => {
-      setUploadProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setTimeout(() => {
-            setIsUploading(false);
-            setExtractedData({
-              vendor: file.vendor,
-              amount: file.amount,
-              category: file.category,
-              type: file.type,
-              tax: file.amount * 0.15,
-              date: new Date().toISOString().substring(0, 10),
-            });
-            setShowPreviewModal(true);
-            showToast('AI successfully extracted invoice data!', 'success');
-          }, 300);
-          return 100;
-        }
-        return prev + 15;
-      });
-    }, 150);
-  };
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      const originalName = e.target.files[0].name;
-      // Map to a realistic random demo transaction
-      const isReceipt = originalName.toLowerCase().includes('receipt') || originalName.toLowerCase().includes('coffee') || originalName.toLowerCase().includes('uber');
-      const randomDemo = isReceipt 
-        ? { name: originalName, vendor: 'Local Merchant Co', amount: 42.10, category: 'Travel & Gas', type: 'expense' as const }
-        : { name: originalName, vendor: 'Enterprise Solutions LLC', amount: 1250.00, category: 'Professional Services', type: 'expense' as const };
+      const file = e.target.files[0];
+      const businessId = Number(localStorage.getItem('vula_business_id') || 1);
       
-      handleSimulateOCR(randomDemo);
+      setIsUploading(true);
+      setUploadProgress(20);
+      showToast(`Uploading receipt ${file.name} to Gemini AI OCR...`, 'info');
+
+      try {
+        setUploadProgress(60);
+        const data = await uploadReceiptOcr(businessId, file);
+        setUploadProgress(100);
+        
+        const newTx: Transaction = {
+          id: data.id.toString(),
+          vendor: data.vendor,
+          date: data.transactionDate,
+          amount: data.amount,
+          type: data.type.toLowerCase() as 'income' | 'expense',
+          category: data.category,
+          status: 'posted'
+        };
+
+        setTransactions((prev) => [newTx, ...prev]);
+        showToast('Gemini successfully parsed and verified the receipt!', 'success');
+      } catch (err: any) {
+        showToast(err.message || 'AI receipt extraction failed. Please try again.', 'error');
+      } finally {
+        setIsUploading(false);
+        setUploadProgress(0);
+      }
     }
   };
 
@@ -117,18 +105,33 @@ export default function Bookkeeping({ transactions, setTransactions, showToast }
       );
       showToast('Transaction updated successfully!', 'success');
     } else {
-      // Manual Add
-      const newTx: Transaction = {
-        id: Math.random().toString(36).substring(2, 9),
-        vendor: formVendor,
+      // Manual Add with Backend integration
+      const businessId = Number(localStorage.getItem('vula_business_id') || 1);
+      createTransactionManual({
+        businessId,
+        type: formType.toUpperCase(),
         amount: parseFloat(formAmount),
         category: formCategory,
-        type: formType,
-        date: formDate,
-        status: 'posted',
-      };
-      setTransactions((prev) => [newTx, ...prev]);
-      showToast('New transaction posted to ledger!', 'success');
+        vendor: formVendor,
+        description: 'Manual Entry: ' + formVendor,
+        transactionDate: formDate,
+        transactionReference: formReference || undefined,
+        proofSource: formProofSource || undefined
+      }).then((data) => {
+        const newTx: Transaction = {
+          id: data.id.toString(),
+          vendor: data.vendor,
+          amount: data.amount,
+          category: data.category,
+          type: data.type.toLowerCase() as 'income' | 'expense',
+          date: data.transactionDate,
+          status: 'posted'
+        };
+        setTransactions((prev) => [newTx, ...prev]);
+        showToast('New transaction posted to backend ledger!', 'success');
+      }).catch((err: any) => {
+        showToast(err.message || 'Failed to save transaction to backend', 'error');
+      });
     }
 
     // Reset Form
@@ -141,6 +144,8 @@ export default function Bookkeeping({ transactions, setTransactions, showToast }
     setFormCategory('Marketing');
     setFormType('expense');
     setFormDate(new Date().toISOString().substring(0, 10));
+    setFormReference('');
+    setFormProofSource('');
     setShowManualModal(false);
     setIsEditing(false);
     setEditingId(null);
@@ -244,24 +249,6 @@ export default function Bookkeeping({ transactions, setTransactions, showToast }
           )}
         </button>
 
-        {/* Quick Demo Preloaded Files */}
-        <div className="space-y-2">
-          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block">Quick Simulation Examples</span>
-          <div className="grid grid-cols-3 gap-2">
-            {demoFiles.map((file, idx) => (
-              <button
-                key={idx}
-                disabled={isUploading}
-                onClick={() => handleSimulateOCR(file)}
-                className="bg-slate-950 hover:bg-slate-900 border border-slate-850/60 p-2 rounded-xl text-left hover:border-slate-700 transition-all duration-150 flex flex-col justify-between min-h-[72px]"
-              >
-                <span className="text-[9px] font-extrabold text-fin-success truncate w-full">{file.name}</span>
-                <span className="text-[10px] font-semibold text-white block truncate mt-1">{file.vendor}</span>
-                <span className="text-[9px] font-bold text-slate-500 block mt-0.5">${file.amount}</span>
-              </button>
-            ))}
-          </div>
-        </div>
       </div>
 
       {/* 2. TRANSACTION LEDGER SECTION */}
@@ -557,20 +544,82 @@ export default function Bookkeeping({ transactions, setTransactions, showToast }
 
               <div>
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wide block mb-1">Categorical Tag</label>
-                <select
-                  value={formCategory}
-                  onChange={(e) => setFormCategory(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-850 px-3.5 py-2.5 rounded-xl text-xs text-white focus:outline-none focus:border-fin-success min-h-[44px]"
-                >
-                  <option value="Sales Revenue">Sales Revenue</option>
-                  <option value="Professional Services">Professional Services</option>
-                  <option value="Marketing">Marketing</option>
-                  <option value="Hosting & SaaS">Hosting & SaaS</option>
-                  <option value="Rent & Utilities">Rent & Utilities</option>
-                  <option value="Meals & Entertainment">Meals & Entertainment</option>
-                  <option value="Supplies & Equipment">Supplies & Equipment</option>
-                </select>
+                {!isCustomCategory ? (
+                  <select
+                    value={formCategory}
+                    onChange={(e) => {
+                      if (e.target.value === 'CUSTOM') {
+                        setIsCustomCategory(true);
+                        setFormCategory('');
+                      } else {
+                        setFormCategory(e.target.value);
+                      }
+                    }}
+                    className="w-full bg-slate-950 border border-slate-850 px-3.5 py-2.5 rounded-xl text-xs text-white focus:outline-none focus:border-fin-success min-h-[44px]"
+                  >
+                    <option value="Sales Revenue">Sales Revenue</option>
+                    <option value="Professional Services">Professional Services</option>
+                    <option value="Marketing">Marketing</option>
+                    <option value="Hosting & SaaS">Hosting & SaaS</option>
+                    <option value="Rent & Utilities">Rent & Utilities</option>
+                    <option value="Meals & Entertainment">Meals & Entertainment</option>
+                    <option value="Supplies & Equipment">Supplies & Equipment</option>
+                    <option value="Consulting">Consulting</option>
+                    <option value="Sales">Sales</option>
+                    <option value="Inventory">Inventory</option>
+                    <option value="Utilities">Utilities</option>
+                    <option value="Rent">Rent</option>
+                    <option value="CUSTOM">+ Add Custom Category...</option>
+                  </select>
+                ) : (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Type custom category..."
+                      value={formCategory}
+                      onChange={(e) => setFormCategory(e.target.value)}
+                      required
+                      className="flex-1 bg-slate-950 border border-slate-850 px-3.5 py-2.5 rounded-xl text-xs text-white focus:outline-none focus:border-fin-success min-h-[44px]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsCustomCategory(false);
+                        setFormCategory('Marketing');
+                      }}
+                      className="px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-xl border border-slate-700"
+                    >
+                      List
+                    </button>
+                  </div>
+                )}
               </div>
+
+              {/* Optional verification references block */}
+              {!isEditing && (
+                <div className="grid grid-cols-2 gap-3 border-t border-slate-850 pt-3">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wide block mb-1">Transaction Ref ID (Optional)</label>
+                    <input
+                      type="text"
+                      value={formReference}
+                      onChange={(e) => setFormReference(e.target.value)}
+                      placeholder="e.g. FT261203NBTN"
+                      className="w-full bg-slate-950 border border-slate-850 px-3.5 py-2.5 rounded-xl text-xs text-white focus:outline-none focus:border-fin-success min-h-[44px]"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wide block mb-1">Institution Source (Optional)</label>
+                    <input
+                      type="text"
+                      value={formProofSource}
+                      onChange={(e) => setFormProofSource(e.target.value)}
+                      placeholder="e.g. CBE or Telebirr"
+                      className="w-full bg-slate-950 border border-slate-850 px-3.5 py-2.5 rounded-xl text-xs text-white focus:outline-none focus:border-fin-success min-h-[44px]"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="flex gap-3 pt-2">

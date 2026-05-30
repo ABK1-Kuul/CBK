@@ -3,8 +3,18 @@ import Onboarding from './components/Onboarding';
 import Dashboard from './components/Dashboard';
 import CreditScore from './components/CreditScore';
 import FinancialPassport from './components/FinancialPassport';
-import { Transaction, BusinessProfile } from './types';
-import { Sparkles, X, LayoutDashboard, FileSpreadsheet, ShieldAlert, FileSignature, LogOut, Landmark, Menu, User, FileText } from 'lucide-react';
+import AIChatBot from './components/AIChatBot';
+import { Transaction, BusinessProfile, SME } from './types';
+import { Sparkles, X, LayoutDashboard, FileSpreadsheet, ShieldAlert, FileSignature, LogOut, Landmark, Menu, User, FileText, BarChart, Database, Shuffle, FolderSync } from 'lucide-react';
+
+// Copied Financial Institution Portal Components
+import { FIDashboard } from './components/fi/FIDashboard';
+import { FIRegistration } from './components/fi/FIRegistration';
+import { SMEMarketplace } from './components/fi/SMEMarketplace';
+import { FundingEligibility } from './components/fi/FundingEligibility';
+import { DealPipeline } from './components/fi/DealPipeline';
+import { PortfolioAnalytics } from './components/fi/PortfolioAnalytics';
+import { FinancialPassportViewer } from './components/fi/FinancialPassportViewer';
 
 interface Toast {
   id: string;
@@ -18,68 +28,94 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  
+  const userRole = localStorage.getItem('vula_user_role') || 'SME_USER';
 
-  // Pre-load standard mock financial transaction ledger
-  const [transactions, setTransactions] = useState<Transaction[]>([
-    {
-      id: 'tx-1',
-      vendor: 'Stripe Merchant Payout',
-      date: '2026-05-28',
-      amount: 14500.00,
-      type: 'income',
-      category: 'Sales Revenue',
-      status: 'posted'
-    },
-    {
-      id: 'tx-2',
-      vendor: 'Meta Platforms (Ads)',
-      date: '2026-05-25',
-      amount: 1200.00,
-      type: 'expense',
-      category: 'Marketing',
-      status: 'posted'
-    },
-    {
-      id: 'tx-3',
-      vendor: 'WeWork Office Space',
-      date: '2026-05-01',
-      amount: 3200.00,
-      type: 'expense',
-      category: 'Rent & Utilities',
-      status: 'posted'
-    },
-    {
-      id: 'tx-4',
-      vendor: 'Acme Advisory Group',
-      date: '2026-04-20',
-      amount: 1500.00,
-      type: 'expense',
-      category: 'Professional Services',
-      status: 'posted'
-    },
-    {
-      id: 'tx-5',
-      vendor: 'Stripe Merchant Payout',
-      date: '2026-04-15',
-      amount: 11200.00,
-      type: 'income',
-      category: 'Sales Revenue',
-      status: 'posted'
+  // Unified App Portals Mode Toggle ('sme' for Owner, 'fi' for Banks/FIs)
+  const [portalMode, setPortalMode] = useState<'sme' | 'fi'>(() => {
+    return userRole === 'BANK_LENDER' ? 'fi' : 'sme';
+  });
+  const [fiSubView, setFiSubView] = useState<'dashboard' | 'setup' | 'marketplace' | 'eligibility' | 'pipeline' | 'analytics'>('dashboard');
+  const [selectedSmeForViewer, setSelectedSmeForViewer] = useState<SME | null>(null);
+
+  const handleSelectSMEForViewer = (sme: SME) => {
+    setSelectedSmeForViewer(sme);
+    setFiSubView('marketplace'); // Set page to render the viewer
+  };
+
+  // Real financial transaction ledger loaded dynamically from backend database
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [realScore, setRealScore] = useState<number | null>(null);
+  const [riskLevel, setRiskLevel] = useState<string>('MEDIUM');
+  const [scoreError, setScoreError] = useState<string | null>(null);
+
+  // Fetch real credit score centrally from Vula Ledger backend on transaction changes
+  useEffect(() => {
+    if (isLoggedIn) {
+      const businessId = Number(localStorage.getItem('vula_business_id') || 1);
+      fetch(`http://localhost:8080/api/credit-score/${businessId}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('vula_jwt_token')}`
+        }
+      })
+        .then((res) => {
+          if (!res.ok) {
+            return res.json().then((err) => { throw new Error(err.message || 'Failed to fetch credit score') });
+          }
+          return res.json();
+        })
+        .then((data) => {
+          setRealScore(data.score);
+          setRiskLevel(data.riskLevel);
+          setScoreError(null);
+        })
+        .catch((err) => {
+          console.error('Failed centrally to fetch credit score:', err);
+          setScoreError(err.message || 'Credit score loading failed.');
+        });
     }
-  ]);
+  }, [isLoggedIn, transactions]);
 
   // Load from localStorage if present for mock persistence
   useEffect(() => {
     const savedProfile = localStorage.getItem('sme_profile');
-    const savedTransactions = localStorage.getItem('sme_transactions');
     if (savedProfile) {
       setProfile(JSON.parse(savedProfile));
       setIsLoggedIn(true);
     }
-    if (savedTransactions) {
-      setTransactions(JSON.parse(savedTransactions));
-    }
   }, []);
+
+  // Fetch live, verified transactions directly from Vula Ledger backend
+  useEffect(() => {
+    if (isLoggedIn) {
+      const businessId = Number(localStorage.getItem('vula_business_id') || 1);
+      fetch(`http://localhost:8080/api/transactions/business/${businessId}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('vula_jwt_token')}`
+        }
+      })
+        .then((response) => response.json())
+        .then((data) => {
+          if (Array.isArray(data)) {
+            const mapped = data.map((t: any) => ({
+              id: t.id.toString(),
+              vendor: t.vendor || 'Unknown',
+              date: t.transactionDate,
+              amount: t.amount,
+              type: t.type.toLowerCase() as 'income' | 'expense',
+              category: t.category || 'Other',
+              status: 'posted' as const
+            }));
+            setTransactions(mapped);
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to load real transactions from backend:', err);
+        });
+    }
+  }, [isLoggedIn]);
 
   // Sync to localStorage
   const handleOnboardingComplete = (newProfile: BusinessProfile) => {
@@ -187,13 +223,23 @@ export default function App() {
     setProfile(null);
     setIsLoggedIn(false);
     setActiveTab('dashboard');
-    showToast('Signed out. Mock database reset.', 'info');
+    showToast('Signed out.', 'info');
   };
 
   const navLinks = [
     { id: 'dashboard', label: 'Bookkeeping Scan Hub', icon: LayoutDashboard },
     { id: 'credit', label: 'AI Credit Score', icon: ShieldAlert },
     { id: 'passport', label: 'Lender Passport', icon: FileText },
+    { id: 'chat', label: 'SmartLedger AI Advisor', icon: Sparkles },
+  ];
+
+  const fiLinks = [
+    { id: 'dashboard', label: 'Executive Dashboard', icon: LayoutDashboard },
+    { id: 'setup', label: 'Institution Profile', icon: Landmark },
+    { id: 'marketplace', label: 'SME Directory Grid', icon: Database },
+    { id: 'eligibility', label: 'Funding Eligibility', icon: FileText },
+    { id: 'pipeline', label: 'Deal Pipeline CRM', icon: Shuffle },
+    { id: 'analytics', label: 'Portfolio Analytics', icon: BarChart },
   ];
 
   return (
@@ -248,8 +294,12 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="hidden sm:block text-xs text-slate-400 font-bold px-3 py-1.5 bg-slate-950 border border-slate-800/80 rounded-lg">
-                <span>SME Workstation Portal</span>
+              <div className="hidden sm:block text-xs text-indigo-400 font-bold px-3 py-1.5 bg-slate-950 border border-slate-800/80 rounded-lg">
+                <span>
+                  {userRole === 'SME_USER' && "SME Workstation Portal"}
+                  {userRole === 'SME_VENDORS' && "SME Vendor Hub"}
+                  {userRole === 'BANK_LENDER' && "Bank Underwriter Portal"}
+                </span>
               </div>
 
               {/* MOBILE NAV BUTTON */}
@@ -263,27 +313,52 @@ export default function App() {
             </div>
           </header>
 
-          {/* PORTAL NAV STRIPS FOR MOBILE */}
-          {mobileMenuOpen && (
-            <div className="lg:hidden bg-slate-900 border-b border-slate-800 p-4 space-y-3 animate-slide-down text-xs">
+              {/* PORTAL NAV STRIPS FOR MOBILE */}
+              {mobileMenuOpen && (
+                <div className="lg:hidden bg-slate-900 border-b border-slate-800 p-4 space-y-3 animate-slide-down text-xs">
+                  <div className="bg-slate-950 p-2 border border-slate-850 rounded-xl text-center font-bold text-indigo-400 mb-2">
+                    {userRole === 'SME_USER' && "SME Owner Portal"}
+                    {userRole === 'SME_VENDORS' && "SME Vendor Portal"}
+                    {userRole === 'BANK_LENDER' && "Bank Underwriter Portal"}
+                  </div>
+
               <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider px-2">Navigation</p>
               
               <div className="flex flex-col gap-1">
-                {navLinks.map((link) => (
-                  <button
-                    key={link.id}
-                    onClick={() => {
-                      setActiveTab(link.id);
-                      setMobileMenuOpen(false);
-                    }}
-                    className={`w-full text-left p-3 rounded-xl font-bold flex items-center gap-2 ${
-                      activeTab === link.id ? 'bg-indigo-950/40 text-indigo-300' : 'text-slate-400 hover:bg-slate-950'
-                    }`}
-                  >
-                    <link.icon className="w-4 h-4 text-indigo-400" />
-                    <span>{link.label}</span>
-                  </button>
-                ))}
+                {portalMode === 'sme' ? (
+                  navLinks.map((link) => (
+                    <button
+                      key={link.id}
+                      onClick={() => {
+                        setActiveTab(link.id);
+                        setMobileMenuOpen(false);
+                      }}
+                      className={`w-full text-left p-3 rounded-xl font-bold flex items-center gap-2 ${
+                        activeTab === link.id ? 'bg-indigo-950/40 text-indigo-300' : 'text-slate-400 hover:bg-slate-950'
+                      }`}
+                    >
+                      <link.icon className="w-4 h-4 text-indigo-400" />
+                      <span>{link.label}</span>
+                    </button>
+                  ))
+                ) : (
+                  fiLinks.map((link) => (
+                    <button
+                      key={link.id}
+                      onClick={() => {
+                        setFiSubView(link.id as any);
+                        setSelectedSmeForViewer(null);
+                        setMobileMenuOpen(false);
+                      }}
+                      className={`w-full text-left p-3 rounded-xl font-bold flex items-center gap-2 ${
+                        fiSubView === link.id ? 'bg-indigo-950/40 text-indigo-300' : 'text-slate-400 hover:bg-slate-950'
+                      }`}
+                    >
+                      <link.icon className="w-4 h-4 text-indigo-400" />
+                      <span>{link.label}</span>
+                    </button>
+                  ))
+                )}
                 
                 <button
                   onClick={handleSignOut}
@@ -303,32 +378,63 @@ export default function App() {
               {/* DESKTOP SIDEBAR - Hidden on mobile */}
               <aside className="hidden lg:block lg:col-span-3 bg-slate-900/40 border border-slate-800 rounded-2xl p-4 sticky top-24 space-y-4">
                 
+                {/* Role Badge Indicator */}
+                <div className="bg-slate-950 p-3 border border-slate-800/80 rounded-xl text-center text-xs font-bold text-indigo-400 uppercase tracking-wide">
+                  {userRole === 'SME_USER' && "SME Owner Portal"}
+                  {userRole === 'SME_VENDORS' && "SME Vendor Portal"}
+                  {userRole === 'BANK_LENDER' && "Bank Underwriter"}
+                </div>
+
                 {/* Context Widget info */}
                 <div className="bg-slate-950 p-4 border border-slate-800/80 rounded-xl space-y-2 text-xs">
                   <p className="text-[9px] text-slate-500 uppercase font-black tracking-widest">Active Identity</p>
                   <div>
-                    <p className="text-xs font-bold text-slate-200">{profile.businessName}</p>
-                    <p className="text-[10px] text-indigo-400 font-medium">SME Bookkeeper</p>
+                    <p className="text-xs font-bold text-slate-200">{portalMode === 'sme' ? profile.businessName : 'Lending Partner'}</p>
+                    <p className="text-[10px] text-indigo-400 font-medium">
+                      {userRole === 'SME_USER' && 'SME Bookkeeper'}
+                      {userRole === 'SME_VENDORS' && 'Bulk Supplier / Merchant'}
+                      {userRole === 'BANK_LENDER' && 'Underwriter Portal'}
+                    </p>
                   </div>
                 </div>
 
                 <div className="border-t border-slate-800/60 pt-4 space-y-1 text-xs">
                   <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider px-2.5 mb-2">Controls Navigation</p>
                   
-                  {navLinks.map((link) => (
-                    <button
-                      key={link.id}
-                      onClick={() => setActiveTab(link.id)}
-                      className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center gap-2 transition-all ${
-                        activeTab === link.id
-                          ? 'bg-indigo-600 text-white shadow-md'
-                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/60'
-                      }`}
-                    >
-                      <link.icon className="w-4 h-4 shrink-0" />
-                      <span>{link.label}</span>
-                    </button>
-                  ))}
+                  {portalMode === 'sme' ? (
+                    navLinks.map((link) => (
+                      <button
+                        key={link.id}
+                        onClick={() => setActiveTab(link.id)}
+                        className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center gap-2 transition-all ${
+                          activeTab === link.id
+                            ? 'bg-indigo-600 text-white shadow-md'
+                            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/60'
+                        }`}
+                      >
+                        <link.icon className="w-4 h-4 shrink-0" />
+                        <span>{link.label}</span>
+                      </button>
+                    ))
+                  ) : (
+                    fiLinks.map((link) => (
+                      <button
+                        key={link.id}
+                        onClick={() => {
+                          setFiSubView(link.id as any);
+                          setSelectedSmeForViewer(null);
+                        }}
+                        className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center gap-2 transition-all ${
+                          fiSubView === link.id
+                            ? 'bg-indigo-600 text-white shadow-md'
+                            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/60'
+                        }`}
+                      >
+                        <link.icon className="w-4 h-4 shrink-0" />
+                        <span>{link.label}</span>
+                      </button>
+                    ))
+                  )}
 
                   <button
                     onClick={handleSignOut}
@@ -342,32 +448,63 @@ export default function App() {
               </aside>
 
               {/* ACTIVE PORTAL SCREEN SECTION */}
-              <div className="col-span-1 lg:col-span-9 animate-fade-in">
-                {activeTab === 'dashboard' && (
-                  <Dashboard
-                    profile={profile}
-                    transactions={transactions}
-                    setTransactions={handleSetTransactions}
-                    setActiveTab={setActiveTab}
-                    calculateCreditScore={calculateCreditScore}
-                    showToast={showToast}
-                  />
-                )}
-                {activeTab === 'credit' && (
-                  <CreditScore
-                    profile={profile}
-                    transactions={transactions}
-                    calculateCreditScore={calculateCreditScore}
-                    showToast={showToast}
-                  />
-                )}
-                {activeTab === 'passport' && (
-                  <FinancialPassport
-                    profile={profile}
-                    transactions={transactions}
-                    calculateCreditScore={calculateCreditScore}
-                    showToast={showToast}
-                  />
+              <div className="col-span-1 lg:col-span-9 animate-fade-in text-xs">
+                {portalMode === 'sme' ? (
+                  <>
+                    {activeTab === 'dashboard' && (
+                      <Dashboard
+                        profile={profile}
+                        transactions={transactions}
+                        setTransactions={handleSetTransactions}
+                        setActiveTab={setActiveTab}
+                        calculateCreditScore={calculateCreditScore}
+                        showToast={showToast}
+                      />
+                    )}
+                    {activeTab === 'credit' && (
+                      <CreditScore
+                        profile={profile}
+                        transactions={transactions}
+                        calculateCreditScore={calculateCreditScore}
+                        showToast={showToast}
+                      />
+                    )}
+                    {activeTab === 'passport' && (
+                      <FinancialPassport
+                        profile={profile}
+                        transactions={transactions}
+                        calculateCreditScore={calculateCreditScore}
+                        showToast={showToast}
+                        realScore={realScore}
+                        scoreError={scoreError}
+                      />
+                    )}
+                    {activeTab === 'chat' && (
+                      <AIChatBot
+                        transactions={transactions}
+                        calculateCreditScore={calculateCreditScore}
+                        showToast={showToast}
+                      />
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {selectedSmeForViewer && fiSubView === 'marketplace' ? (
+                      <FinancialPassportViewer
+                        sme={selectedSmeForViewer}
+                        onBack={() => setSelectedSmeForViewer(null)}
+                      />
+                    ) : (
+                      <>
+                        {fiSubView === 'dashboard' && <FIDashboard />}
+                        {fiSubView === 'setup' && <FIRegistration />}
+                        {fiSubView === 'marketplace' && <SMEMarketplace onSelectSME={handleSelectSMEForViewer} />}
+                        {fiSubView === 'eligibility' && <FundingEligibility onSelectSME={handleSelectSMEForViewer} />}
+                        {fiSubView === 'pipeline' && <DealPipeline />}
+                        {fiSubView === 'analytics' && <PortfolioAnalytics />}
+                      </>
+                    )}
+                  </>
                 )}
               </div>
 

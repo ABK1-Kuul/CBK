@@ -16,6 +16,8 @@ interface FinancialPassportProps {
     breakdown: { longevity: number; ledger: number; revenue: number };
   };
   showToast: (message: string, type: 'success' | 'info' | 'error') => void;
+  realScore: number | null;
+  scoreError: string | null;
 }
 
 interface LocalFundingRequest {
@@ -31,9 +33,12 @@ export default function FinancialPassport({
   profile, 
   transactions, 
   calculateCreditScore, 
-  showToast 
+  showToast,
+  realScore,
+  scoreError
 }: FinancialPassportProps) {
-  const { score, level, color, label } = calculateCreditScore();
+  const { score: localScore, level, color, label } = calculateCreditScore();
+  const finalScore = scoreError ? "Not Ready" : (realScore !== null ? realScore : localScore);
   const [showShareSheet, setShowShareSheet] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [amount, setAmount] = useState('');
@@ -64,10 +69,33 @@ export default function FinancialPassport({
   const profitMargin = totalIncome > 0 ? ((totalIncome - totalExpense) / totalIncome) * 100 : 0;
   
   const handleDownloadPDF = () => {
+    const businessId = Number(localStorage.getItem('vula_business_id') || 1);
     showToast('Compiling financial ledger and AI risk profiles...', 'info');
-    setTimeout(() => {
-      showToast('Financial Passport PDF successfully compiled & downloaded!', 'success');
-    }, 1500);
+    
+    // Download real PDF directly from the backend
+    fetch(`http://localhost:8080/api/passport/${businessId}/pdf`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('vula_jwt_token')}`
+      }
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error('PDF Generation failed');
+        return response.blob();
+      })
+      .then((blob) => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Vula_Financial_Passport_${businessId}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        showToast('Financial Passport PDF successfully compiled & downloaded!', 'success');
+      })
+      .catch((err) => {
+        showToast('Failed to download real PDF document from backend.', 'error');
+      });
   };
 
   const handleShareReport = (method: string) => {
@@ -163,7 +191,9 @@ export default function FinancialPassport({
             </div>
             <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/60">
               <span className="text-[10px] text-slate-500 uppercase tracking-wider block">Ecosystem Credit Class</span>
-              <span className="text-sm font-semibold text-slate-200 mt-1 block">{label}</span>
+              <span className="text-sm font-semibold text-slate-200 mt-1 block">
+                {scoreError ? "Awaiting Transaction History" : label}
+              </span>
             </div>
             <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/60">
               <span className="text-[10px] text-slate-500 uppercase tracking-wider block">Geographic HQ Location</span>
@@ -175,6 +205,10 @@ export default function FinancialPassport({
             <h3 className="text-sm font-bold text-slate-300">Underwriting Indicators</h3>
             
             <div className="space-y-2">
+              <div className="flex justify-between items-center text-xs text-slate-400 bg-slate-950/30 p-2.5 rounded border border-slate-800/40 mb-2">
+                <span>Vula Ledger Credit Rating Score</span>
+                <span className="font-bold text-indigo-400">{finalScore}</span>
+              </div>
               <div className="flex justify-between items-center text-xs text-slate-400 bg-slate-950/30 p-2.5 rounded border border-slate-800/40">
                 <span>Verified Monthly Income (30-day Avg)</span>
                 <span className="font-bold text-slate-100">${totalIncome.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
