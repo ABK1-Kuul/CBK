@@ -61,6 +61,7 @@ export default function Bookkeeping({ transactions, setTransactions, showToast }
               amount: file.amount,
               category: file.category,
               type: file.type,
+              tax: file.amount * 0.15,
               date: new Date().toISOString().substring(0, 10),
             });
             setShowPreviewModal(true);
