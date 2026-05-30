@@ -3,6 +3,7 @@ export interface Transaction {
   vendor: string;
   date: string;
   amount: number;
+  tax?: number;
   type: 'income' | 'expense';
   category: string;
   status: 'pending' | 'posted';
@@ -23,6 +24,7 @@ export interface ExtractedData {
   vendor: string;
   date: string;
   amount: number;
+  tax: number;
   category: string;
   type: 'income' | 'expense';
 }
